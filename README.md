@@ -1,6 +1,7 @@
 Explanation:
 
-Basic kernel module that prints a message to the kernel logs upon during initalisation and during removal.
+Kernel module that creates a character device that prints messages to the kernel log every time its opened, closed, read
+from or written to.
 
 Prerequisites:
 
@@ -10,9 +11,13 @@ Instructions to run:
 
 run `dmesg -w` in its own window.
 
-`make`
+`make` to compile hello.c to hello.o and generate the target hello.ko file.
 
 `sudo insmod hello.ko` to insert the module.
+
+`sudo cat /dev/chardev` to trigger a read message.
+
+`echo "hello" | sudo tee /dev/chardev` to trigger a write message.
 
 `sudo rmmod hello` to remove the module.	
 

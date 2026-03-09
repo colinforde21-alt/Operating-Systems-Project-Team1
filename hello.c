@@ -5,20 +5,49 @@
 #include <linux/printk.h>
 #include <linux/cdev.h>
 #include <linux/device.h>
-
+#include <linux/string.h>
 
 #define DEV_NAME "chardev"
+#define SIZE 14
+static char msg[SIZE];
 
-static ssize_t hello_read(struct file *filp, char __user *c, size_t s, loff_t *o) 
+static ssize_t hello_read(struct file *filp, char __user *buf, size_t len, loff_t *off)
 {
-	pr_info("Attempting to read!\n");
-	ssize_t ss = 0;
-	return ss;
+
+	int bytes_read = 0;
+	loff_t count = *off;
+
+	if (*off >= SIZE || !msg[*off])
+		return 0;
+
+	while(len && msg[count]) {
+		put_user(msg[count++], buf++);
+		--len;
+		++bytes_read;
+	}
+
+	*off += bytes_read;
+
+	return (ssize_t) bytes_read;
 }
-static ssize_t hello_write(struct file *filp, const char __user *c, size_t len, loff_t *off)
+static ssize_t hello_write(struct file *filp, const char __user *buf, size_t length, loff_t *off)
 {
-	pr_info("Attempting to write!\n");
-	return len;
+	int bytes_written = 0;
+	int count = *off;
+
+	if (*off >= length)
+		return -1;
+	length--;
+	while (length && count < SIZE - 1) {
+		get_user(msg[count++], buf++);
+		bytes_written++;
+		length--;
+	}
+
+	msg[count] = '\0';
+	*off += 1 + bytes_written;
+
+	return (ssize_t) bytes_written;
 }
 static int hello_open(struct inode *inode, struct file *file)
 {
