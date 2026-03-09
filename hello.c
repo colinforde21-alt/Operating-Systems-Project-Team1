@@ -6,6 +6,7 @@
 #include <linux/cdev.h>
 #include <linux/device.h>
 #include <linux/string.h>
+#include <linux/wait.h>
 
 #define DEV_NAME "chardev"
 #define SIZE 256
@@ -14,13 +15,14 @@ static char buffer[SIZE];
 static int buf_len = 0;
 static int buf_read = 0;
 
+DECLARE_WAIT_QUEUE_HEAD(hello_wait_queue);
+
 static ssize_t hello_read(struct file *filp, char __user *buf, size_t len, loff_t *off)
 {
-
 	int bytes_read = 0;
 
-	if (buf_read >= buf_len)
-		return 0;
+	if((wait_event_interruptible(hello_wait_queue, buf_read < buf_len)) != 0)
+		return -1;
 
 	while(len && buf_read < buf_len) {
 		put_user(buffer[buf_read++], buf++);
@@ -32,6 +34,7 @@ static ssize_t hello_read(struct file *filp, char __user *buf, size_t len, loff_
 }
 static ssize_t hello_write(struct file *filp, const char __user *buf, size_t length, loff_t *off)
 {
+
 	int bytes_written = 0;
 
 	while (length && buf_len < SIZE - 1) {
@@ -41,6 +44,8 @@ static ssize_t hello_write(struct file *filp, const char __user *buf, size_t len
 	}
 
 	buffer[buf_len] = '\0';
+
+	wake_up_interruptible(&hello_wait_queue);
 
 	return (ssize_t) bytes_written;
 }
