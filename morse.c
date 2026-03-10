@@ -7,13 +7,18 @@
 #include <linux/device.h>
 #include <linux/string.h>
 #include <linux/wait.h>
+#include <linux/mutex.h>
+#include <linux/gpio.h>
 
 #define DEV_NAME "chardev"
 #define SIZE 256
+#define LED_PIN 529
 
 static char buffer[SIZE];
 static int buf_len = 0;
 static int buf_read = 0;
+
+static DEFINE_MUTEX(buffer_mutex);
 
 DECLARE_WAIT_QUEUE_HEAD(hello_wait_queue);
 
@@ -22,7 +27,10 @@ static ssize_t hello_read(struct file *filp, char __user *buf, size_t len, loff_
 	int bytes_read = 0;
 
 	if((wait_event_interruptible(hello_wait_queue, buf_read < buf_len)) != 0)
-		return -1;
+		return -ERESTARTSYS;
+
+	if (mutex_lock_interruptible(&buffer_mutex) < 0)
+		return -ERESTARTSYS;
 
 	while(len && buf_read < buf_len) {
 		put_user(buffer[buf_read++], buf++);
@@ -30,12 +38,17 @@ static ssize_t hello_read(struct file *filp, char __user *buf, size_t len, loff_
 		++bytes_read;
 	}
 
+	mutex_unlock(&buffer_mutex);
+
 	return (ssize_t) bytes_read;
 }
 static ssize_t hello_write(struct file *filp, const char __user *buf, size_t length, loff_t *off)
 {
 
 	int bytes_written = 0;
+
+	if (mutex_lock_interruptible(&buffer_mutex) < 0)
+		return -ERESTARTSYS;
 
 	while (length && buf_len < SIZE - 1) {
 		get_user(buffer[buf_len++], buf++);
@@ -45,17 +58,21 @@ static ssize_t hello_write(struct file *filp, const char __user *buf, size_t len
 
 	buffer[buf_len] = '\0';
 
+	mutex_unlock(&buffer_mutex);
+
 	wake_up_interruptible(&hello_wait_queue);
 
 	return (ssize_t) bytes_written;
 }
 static int hello_open(struct inode *inode, struct file *file)
 {
+	gpio_set_value(LED_PIN, 1);
 	pr_info("Opening file!\n");
 	return 0;
 }
 static int hello_release(struct inode *inode, struct file *file)
 {
+	gpio_set_value(LED_PIN, 0);
 	pr_info("Closing file!\n");
 	return 0;
 }
@@ -73,8 +90,13 @@ static struct device *hello_device;
 
 static int __init hello_init(void)
 {
+	if (gpio_request(LED_PIN, "led") < 0)
+		return -1;
+	gpio_direction_output(LED_PIN, 0);
+
 	if ((alloc_chrdev_region(&dev, 0, 1, DEV_NAME)) < 0) {
 		pr_alert("Cannot allocate major number!\n");
+		gpio_free(LED_PIN);
 		return -1;
 	}
 
@@ -83,6 +105,7 @@ static int __init hello_init(void)
 	if ((cdev_add(&hello_cdev, dev, 1)) < 0) {
 		pr_alert("Cannot add device!\n");
 		unregister_chrdev_region(dev, 1);
+		gpio_free(LED_PIN);
 		return -1;
 	}
 
@@ -91,6 +114,7 @@ static int __init hello_init(void)
 		pr_alert("Creating class failed!\n");
 		cdev_del(&hello_cdev);
 		unregister_chrdev_region(dev, 1);
+		gpio_free(LED_PIN);
 		return -1;
 	}
 
@@ -100,6 +124,7 @@ static int __init hello_init(void)
 		cdev_del(&hello_cdev);
 		class_destroy(hello_class);
 		unregister_chrdev_region(dev, 1);
+		gpio_free(LED_PIN);
 		return -1;
 	}
 
@@ -113,6 +138,7 @@ static void __exit hello_exit(void)
 	class_destroy(hello_class);
 	cdev_del(&hello_cdev);
 	unregister_chrdev_region(dev, 1);
+	gpio_free(LED_PIN);
 	pr_info("Module unloaded succesfully!");
 }
 
