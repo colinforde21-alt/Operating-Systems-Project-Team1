@@ -134,7 +134,7 @@ static ssize_t hello_write(struct file *filp, const char __user *buf, size_t len
         int morse_len = strlen(morse);
         int needed = morse_len + 1; // +1 for the separator space 
 
-        if (buf_avail < needed)
+        if (buf_avail() < needed)
             break;
 
         buffer_put_str(morse);
