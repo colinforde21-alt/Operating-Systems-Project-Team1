@@ -82,7 +82,73 @@ static ssize_t hello_read(struct file *filp, char __user *buf, size_t len, loff_
 
 	return (ssize_t) bytes_read;
 }
+
+static bool buffer_put_char(char c)
+{
+    if (buf_full())
+        return false;
+
+    buffer[tail] = c;
+    tail = (tail + 1) % SIZE;
+    return true;
+}
+static bool buffer_put_str(const char *s)
+{
+    while (*s) {
+        if (!buffer_put_char(*s++))
+            return false;
+    }
+    return true;
+}
+static int buf_avail(void)
+{
+    if (tail >= head)
+        return SIZE - (tail - head) - 1;
+    return head - tail - 1;
+}
 static ssize_t hello_write(struct file *filp, const char __user *buf, size_t length, loff_t *off)
+{
+    int bytes_written = 0;
+    char c;
+
+    if (wait_event_interruptible(hello_write_queue, !buf_full()) < 0)
+        return -ERESTARTSYS;
+    if (mutex_lock_interruptible(&buffer_mutex) < 0)
+        return -ERESTARTSYS;
+
+    while (length) {
+        if (get_user(c, buf++) < 0)
+            break;
+
+        const char *morse = getMorse(c);
+        if (!morse) {
+            bytes_written++;
+            length--;
+            continue;
+        }
+
+        int morse_len = strlen(morse);
+        int needed = morse_len + 1; // +1 for the separator space 
+
+        if (buf_avail < needed)
+            break;
+
+        buffer_put_str(morse);
+        buffer_put_char(' ');
+
+        bytes_written++;
+        length--;
+    }
+
+    buffer[tail] = '\0';
+
+    mutex_unlock(&buffer_mutex);
+    wake_up_interruptible(&hello_read_queue);
+
+    return (ssize_t) bytes_written;
+}
+
+/*static ssize_t hello_write(struct file *filp, const char __user *buf, size_t length, loff_t *off)
 {
 
 	int bytes_written = 0;
@@ -107,7 +173,7 @@ static ssize_t hello_write(struct file *filp, const char __user *buf, size_t len
 	wake_up_interruptible(&hello_read_queue);
 
 	return (ssize_t) bytes_written;
-}
+}*/
 static int hello_open(struct inode *inode, struct file *file)
 {
 	gpio_set_value(LED_PIN, 1);
