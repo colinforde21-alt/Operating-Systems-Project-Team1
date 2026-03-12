@@ -20,13 +20,13 @@ static int buf_read = 0;
 
 static DEFINE_MUTEX(buffer_mutex);
 
-DECLARE_WAIT_QUEUE_HEAD(hello_wait_queue);
-
+static DECLARE_WAIT_QUEUE_HEAD(hello_read_queue);
+static DECLARE_WAIT_QUEUE_HEAD(hello_write_queue);
 static ssize_t hello_read(struct file *filp, char __user *buf, size_t len, loff_t *off)
 {
 	int bytes_read = 0;
 
-	if((wait_event_interruptible(hello_wait_queue, buf_read < buf_len)) != 0)
+	if((wait_event_interruptible(hello_read_queue, buf_read < buf_len)) != 0)
 		return -ERESTARTSYS;
 
 	if (mutex_lock_interruptible(&buffer_mutex) < 0)
@@ -40,12 +40,17 @@ static ssize_t hello_read(struct file *filp, char __user *buf, size_t len, loff_
 
 	mutex_unlock(&buffer_mutex);
 
+	wake_up_interruptible(&hello_write_queue);
+
 	return (ssize_t) bytes_read;
 }
 static ssize_t hello_write(struct file *filp, const char __user *buf, size_t length, loff_t *off)
 {
 
 	int bytes_written = 0;
+
+	if (wait_event_interruptible(hello_write_queue, buf_len < SIZE) < 0)
+		return -ERESTARTSYS;
 
 	if (mutex_lock_interruptible(&buffer_mutex) < 0)
 		return -ERESTARTSYS;
@@ -60,7 +65,7 @@ static ssize_t hello_write(struct file *filp, const char __user *buf, size_t len
 
 	mutex_unlock(&buffer_mutex);
 
-	wake_up_interruptible(&hello_wait_queue);
+	wake_up_interruptible(&hello_read_queue);
 
 	return (ssize_t) bytes_written;
 }
