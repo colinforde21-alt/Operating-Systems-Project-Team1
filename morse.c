@@ -15,25 +15,37 @@
 #define LED_PIN 529
 
 static char buffer[SIZE];
-static int buf_len = 0;
-static int buf_read = 0;
+static int head = 0;
+static int tail = 0;
 
 static DEFINE_MUTEX(buffer_mutex);
 
 static DECLARE_WAIT_QUEUE_HEAD(hello_read_queue);
 static DECLARE_WAIT_QUEUE_HEAD(hello_write_queue);
+
+static int buf_empty(void)
+{
+	return head == tail;
+}
+
+static int buf_full(void)
+{
+	return ((tail + 1) % SIZE) == head;
+}
+
 static ssize_t hello_read(struct file *filp, char __user *buf, size_t len, loff_t *off)
 {
 	int bytes_read = 0;
 
-	if((wait_event_interruptible(hello_read_queue, buf_read < buf_len)) != 0)
+	if((wait_event_interruptible(hello_read_queue, !buf_empty()) != 0))
 		return -ERESTARTSYS;
 
 	if (mutex_lock_interruptible(&buffer_mutex) < 0)
 		return -ERESTARTSYS;
 
-	while(len && buf_read < buf_len) {
-		put_user(buffer[buf_read++], buf++);
+	while(len && !buf_empty()) {
+		put_user(buffer[head], buf++);
+		head = (head + 1) % SIZE;
 		--len;
 		++bytes_read;
 	}
@@ -49,19 +61,20 @@ static ssize_t hello_write(struct file *filp, const char __user *buf, size_t len
 
 	int bytes_written = 0;
 
-	if (wait_event_interruptible(hello_write_queue, buf_len < SIZE) < 0)
+	if (wait_event_interruptible(hello_write_queue, !buf_full()) < 0)
 		return -ERESTARTSYS;
 
 	if (mutex_lock_interruptible(&buffer_mutex) < 0)
 		return -ERESTARTSYS;
 
-	while (length && buf_len < SIZE - 1) {
-		get_user(buffer[buf_len++], buf++);
+	while (length && !buf_full()) {
+		get_user(buffer[tail], buf++);
+		tail = (tail + 1) % SIZE;
 		bytes_written++;
 		length--;
 	}
 
-	buffer[buf_len] = '\0';
+	buffer[tail] = '\0';
 
 	mutex_unlock(&buffer_mutex);
 
