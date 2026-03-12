@@ -44,7 +44,11 @@ static ssize_t hello_read(struct file *filp, char __user *buf, size_t len, loff_
 		return -ERESTARTSYS;
 
 	while(len && !buf_empty()) {
-		put_user(buffer[head], buf++);
+		if (put_user(buffer[head], buf++)) {
+			mutex_unlock(&buffer_mutex);
+			return -EFAULT;
+		}
+
 		head = (head + 1) % SIZE;
 		--len;
 		++bytes_read;
@@ -68,7 +72,10 @@ static ssize_t hello_write(struct file *filp, const char __user *buf, size_t len
 		return -ERESTARTSYS;
 
 	while (length && !buf_full()) {
-		get_user(buffer[tail], buf++);
+		if (get_user(buffer[tail], buf++)) {
+			mutex_unlock(&buffer_mutex);
+			return -EFAULT;
+		}
 		tail = (tail + 1) % SIZE;
 		bytes_written++;
 		length--;
