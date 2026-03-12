@@ -15,60 +15,75 @@
 #define LED_PIN 529
 
 static char buffer[SIZE];
-static int buf_len = 0;
-static int buf_read = 0;
+static int count = 0;
+static int head = 0;
+static int tail = 0;
 
 static DEFINE_MUTEX(buffer_mutex);
 
 static DECLARE_WAIT_QUEUE_HEAD(hello_read_queue);
 static DECLARE_WAIT_QUEUE_HEAD(hello_write_queue);
+
 static ssize_t hello_read(struct file *filp, char __user *buf, size_t len, loff_t *off)
 {
-	int bytes_read = 0;
+    int bytes_read = 0;
 
-	if((wait_event_interruptible(hello_read_queue, buf_read < buf_len)) != 0)
-		return -ERESTARTSYS;
+    
+    if ((wait_event_interruptible(hello_read_queue, count > 0)) != 0)
+        return -ERESTARTSYS;
 
-	if (mutex_lock_interruptible(&buffer_mutex) < 0)
-		return -ERESTARTSYS;
+    if (mutex_lock_interruptible(&buffer_mutex) < 0)
+        return -ERESTARTSYS;
 
-	while(len && buf_read < buf_len) {
-		put_user(buffer[buf_read++], buf++);
-		--len;
-		++bytes_read;
-	}
+    while (len && count > 0) {
+        
+        if (put_user(buffer[tail], buf++)) {
+            mutex_unlock(&buffer_mutex);
+            return -EFAULT;
+        }
 
-	mutex_unlock(&buffer_mutex);
+        tail = (tail + 1) % SIZE; 
+        count--;
+        bytes_read++;
+        --len;
+    }
 
-	wake_up_interruptible(&hello_write_queue);
+    mutex_unlock(&buffer_mutex);
+    wake_up_interruptible(&hello_write_queue);
 
-	return (ssize_t) bytes_read;
+    return (ssize_t) bytes_read;
 }
+
 static ssize_t hello_write(struct file *filp, const char __user *buf, size_t length, loff_t *off)
 {
+    int bytes_written = 0;
 
-	int bytes_written = 0;
+    
+    if (wait_event_interruptible(hello_write_queue, count < SIZE) < 0)
+        return -ERESTARTSYS;
 
-	if (wait_event_interruptible(hello_write_queue, buf_len < SIZE) < 0)
-		return -ERESTARTSYS;
+    if (mutex_lock_interruptible(&buffer_mutex) < 0)
+        return -ERESTARTSYS;
 
-	if (mutex_lock_interruptible(&buffer_mutex) < 0)
-		return -ERESTARTSYS;
+    while (length && count < SIZE) {
+        
+        if (get_user(buffer[head], buf++)) {
+            mutex_unlock(&buffer_mutex);
+            return -EFAULT;
+        }
 
-	while (length && buf_len < SIZE - 1) {
-		get_user(buffer[buf_len++], buf++);
-		bytes_written++;
-		length--;
-	}
+        head = (head + 1) % SIZE; 
+       count++;
+        bytes_written++;
+        length--;
+    }
 
-	buffer[buf_len] = '\0';
+    mutex_unlock(&buffer_mutex);
+    wake_up_interruptible(&hello_read_queue);
 
-	mutex_unlock(&buffer_mutex);
-
-	wake_up_interruptible(&hello_read_queue);
-
-	return (ssize_t) bytes_written;
+    return (ssize_t) bytes_written;
 }
+    
 static int hello_open(struct inode *inode, struct file *file)
 {
 	gpio_set_value(LED_PIN, 1);
