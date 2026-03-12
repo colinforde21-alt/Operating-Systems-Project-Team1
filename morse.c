@@ -14,6 +14,40 @@
 #define SIZE 256
 #define LED_PIN 529
 
+typedef struct {
+    char character;
+    const char *morse;
+} MorseEntry;
+
+static MorseEntry morseDict[] = {
+    {'A', ".-"},    {'B', "-..."},  {'C', "-.-."},
+    {'D', "-.."},   {'E', "."},     {'F', "..-."},
+    {'G', "--."},   {'H', "...."},  {'I', ".."},
+    {'J', ".---"},  {'K', "-.-"},   {'L', ".-.."},
+    {'M', "--"},    {'N', "-."},    {'O', "---"},
+    {'P', ".--."},  {'Q', "--.-"},  {'R', ".-."},
+    {'S', "..."},   {'T', "-"},     {'U', "..-"},
+    {'V', "...-"},  {'W', ".--"},   {'X', "-..-"},
+    {'Y', "-.--"},  {'Z', "--.."},
+	
+    {'0', "-----"}, {'1', ".----"}, {'2', "..---"},
+    {'3', "...--"}, {'4', "....-"}, {'5', "....."},
+    {'6', "-...."}, {'7', "--..."}, {'8', "---.."}, {'9', "----."},
+
+    {' ', "/"}
+};
+
+static const char* getMorse(char c) {
+    if (c >= 'a' && c <= 'z') c -= 32;
+
+    int size = sizeof(morseDict) / sizeof(morseDict[0]);
+    for (int i = 0; i < size; i++) {
+        if (morseDict[i].character == c)
+            return morseDict[i].morse;
+    }
+    return NULL;
+}
+
 static char buffer[SIZE];
 static int buf_len = 0;
 static int buf_read = 0;
