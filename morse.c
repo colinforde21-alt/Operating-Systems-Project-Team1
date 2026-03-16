@@ -12,6 +12,7 @@
 #include <linux/delay.h>
 #include <linux/kthread.h>
 
+
 #define DEV_NAME "chardev"
 #define SIZE 256
 #define LED_PIN 529
@@ -155,18 +156,30 @@ static bool morse_buffer_put_str(const char *s)
 
 static int button_polling_thread(void *pv)
 {
-	int prev_state = 1;
+	int stable_state = 1;
+	int last_sample = gpio_get_value(BTN_PIN);
+	int count = 1;
+
 	while(!kthread_should_stop()){
-		int state = gpio_get_value(BTN_PIN);
-		if (prev_state != state) {
-			if (mutex_lock_interruptible(&morse_buffer_mutex) < 0)
-				return continue;
-			morse_buffer_put_str(".- ");
-			mutex_unlock(&morse_buffer_mutex);
-			wake_up_interruptible(&hello_morse_queue);
+		int sample = gpio_get_value(BTN_PIN);
+		if (sample == last_sample)
+			count++;
+		else{
+			last_sample = sample;
+			count = 1;
 		}
-		msleep(20);
-		prev_state = state;
+
+		if (count >= 4 && stable_state != last_sample) {
+			stable_state = last_sample;
+			if (stable_state == 0) {
+				if (mutex_lock_interruptible(&morse_buffer_mutex) < 0)
+					continue;
+				morse_buffer_put_str("A");
+				mutex_unlock(&morse_buffer_mutex);
+				wake_up_interruptible(&hello_morse_queue);
+			}
+		}
+		msleep(2);
 	}
 	return 0;
 }
