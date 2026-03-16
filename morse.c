@@ -11,7 +11,7 @@
 #include <linux/gpio.h>
 #include <linux/delay.h>
 #include <linux/kthread.h>
-
+#include <linux/ktime.h>
 
 #define DEV_NAME "chardev"
 #define SIZE 256
@@ -57,6 +57,8 @@ static DECLARE_WAIT_QUEUE_HEAD(hello_led_queue);
 #define SYMBOL_GAP 200
 #define LETTER_GAP 600
 #define WORD_GAP 1400
+
+#define DOT_DASH_THRESHOLD 400
 
 static char morse_buffer[SIZE];
 static int morse_head = 0;
@@ -152,37 +154,53 @@ static bool morse_buffer_put_str(const char *s)
     return true;
 }
 
-
-
 static int button_polling_thread(void *pv)
 {
-	int stable_state = 1;
-	int last_sample = gpio_get_value(BTN_PIN);
-	int count = 1;
+    int last_sample = gpio_get_value(BTN_PIN);
+    int stable_state = last_sample;
+    int count = 1;
+    ktime_t press_time;
 
-	while(!kthread_should_stop()){
-		int sample = gpio_get_value(BTN_PIN);
-		if (sample == last_sample)
-			count++;
-		else{
-			last_sample = sample;
-			count = 1;
+    while (!kthread_should_stop()) {
+        int sample = gpio_get_value(BTN_PIN);
+
+        if (sample == last_sample) {
+            count++;
+        } else {
+            last_sample = sample;
+            count = 1;
+        }
+
+        if (count >= 5 && stable_state != last_sample) {
+            stable_state = last_sample;
+
+            if (stable_state == 0) {
+                press_time = ktime_get();
+            } else {
+                s64 elapsed_ms = ktime_ms_delta(ktime_get(), press_time);
+
+                if (mutex_lock_interruptible(&morse_buffer_mutex) < 0)
+                    continue;
+
+                if (elapsed_ms >= DOT_DASH_THRESHOLD) {
+                    morse_buffer_put_str("-");
+                } else if (elapsed_ms > 0) {
+                    morse_buffer_put_str(".");
+		} else {
+			continue;
 		}
 
-		if (count >= 4 && stable_state != last_sample) {
-			stable_state = last_sample;
-			if (stable_state == 0) {
-				if (mutex_lock_interruptible(&morse_buffer_mutex) < 0)
-					continue;
-				morse_buffer_put_str("A");
-				mutex_unlock(&morse_buffer_mutex);
-				wake_up_interruptible(&hello_morse_queue);
-			}
-		}
-		msleep(2);
-	}
-	return 0;
+                mutex_unlock(&morse_buffer_mutex);
+                wake_up_interruptible(&hello_morse_queue);
+            }
+        }
+
+        msleep(2);
+    }
+
+    return 0;
 }
+
 
 
 static ssize_t hello_read(struct file *filp, char __user *buf, size_t len, loff_t *off)
