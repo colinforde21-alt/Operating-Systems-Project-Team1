@@ -3,6 +3,7 @@
 *.mod
 *.mod.c
 *.cmd
+*.out
 Module.symvers
 modules.order
 userspace_app
