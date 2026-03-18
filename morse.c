@@ -12,11 +12,17 @@
 #include <linux/delay.h>
 #include <linux/kthread.h>
 #include <linux/ktime.h>
+#include <linux/ioctl.h>
+#include <linux/atomic.h>
 
 #define DEV_NAME "chardev"
 #define SIZE 256
 #define LED_PIN 529
 #define BTN_PIN 514
+
+#define MORSE_MAGIC 'M'
+#define MORSE_SET_UNIT _IOW(MORSE_MAGIC, 1, unsigned int)
+#define MORSE_GET_UNIT _IOR(MORSE_MAGIC, 2, unsigned int)
 
 typedef struct {
     char character;
@@ -43,6 +49,24 @@ static const char* getMorse(char c) {
     return NULL;
 }
 
+static atomic_t morse_unit_ms = ATOMIC_INIT(200); 
+
+static unsigned int get_dot(void)    { 
+	return atomic_read(&morse_unit_ms); 
+}
+static unsigned int get_dash(void)   { 
+	return atomic_read(&morse_unit_ms) * 3; 
+}
+static unsigned int get_sym_gap(void){ 
+	return atomic_read(&morse_unit_ms); 
+}
+static unsigned int get_let_gap(void){ 
+	return atomic_read(&morse_unit_ms) * 3; 
+}
+static unsigned int get_word_gap(void){ 
+	return atomic_read(&morse_unit_ms) * 7; 
+}
+
 static char led_buffer[SIZE];
 static int led_head = 0;
 static int led_tail = 0;
@@ -52,13 +76,6 @@ static struct task_struct *led_thread;
 static DEFINE_MUTEX(led_buffer_mutex);
 static DECLARE_WAIT_QUEUE_HEAD(hello_led_queue);
 
-#define DOT_LENGTH 200
-#define DASH_LENGTH 600
-#define SYMBOL_GAP 200
-#define LETTER_GAP 600
-#define WORD_GAP 1400
-
-#define DOT_DASH_THRESHOLD 400
 
 static char morse_buffer[SIZE];
 static int morse_head = 0;
@@ -111,21 +128,21 @@ static int led_write_thread(void *pv)
 		switch(c) {
 			case '.':
 				gpio_set_value(LED_PIN, 1);
-				msleep(DOT_LENGTH);
+				msleep(get_dot());
 				gpio_set_value(LED_PIN, 0);
-				msleep(SYMBOL_GAP);
+				msleep(get_sym_gap());
 				break;
 			case '-':
 				gpio_set_value(LED_PIN, 1);
-				msleep(DASH_LENGTH);
+				msleep(get_dash());
 				gpio_set_value(LED_PIN, 0);
-				msleep(SYMBOL_GAP);
+				msleep(get_sym_gap());
 				break;
 			case '/':
-				msleep(WORD_GAP);
+				msleep(get_word_gap());
 				break;
 			case ' ':
-				msleep(LETTER_GAP);
+				msleep(get_let_gap());
 				break;
 		}
 
@@ -156,58 +173,44 @@ static bool morse_buffer_put_str(const char *s)
 
 static int button_polling_thread(void *pv)
 {
-    	int last_sample = gpio_get_value(BTN_PIN);
-    	int stable_state = last_sample;
- 	int count = 1;
-	ktime_t press_time;
-	ktime_t release_time = ktime_get();
+    int last_sample = gpio_get_value(BTN_PIN);
+    int stable_state = last_sample;
+    int count = 1;
+    ktime_t press_time;
 
+    while (!kthread_should_stop()) {
+        int sample = gpio_get_value(BTN_PIN);
+		s64 threshold = (s64)atomic_read(&morse_unit_ms) * 2;
 
-	while (!kthread_should_stop()) {
-	int sample = gpio_get_value(BTN_PIN);
-
-	if (sample == last_sample) {
- 		count++;
+        if (sample == last_sample) {
+            count++;
         } else {
-		last_sample = sample;
-		count = 1;
-	}
+            last_sample = sample;
+            count = 1;
+        }
 
         if (count >= 5 && stable_state != last_sample) {
             stable_state = last_sample;
 
-            char *string = NULL;
-
             if (stable_state == 0) {
                 press_time = ktime_get();
-
-		s64 time_between_presses = ktime_ms_delta(ktime_get(), release_time);
-
-		if (time_between_presses >= LETTER_GAP && time_between_presses < WORD_GAP)
-			string = " ";
-		else if (time_between_presses >= WORD_GAP)
-			string = "/";
-
             } else {
                 s64 elapsed_ms = ktime_ms_delta(ktime_get(), press_time);
 
+                if (mutex_lock_interruptible(&morse_buffer_mutex) < 0)
+                    continue;
 
-                if (elapsed_ms >= DOT_DASH_THRESHOLD) {
-			string = "-";
+                if (elapsed_ms >= threshold) {
+                    morse_buffer_put_str("-");
                 } else if (elapsed_ms > 0) {
-                    	string = ".";
+                    morse_buffer_put_str(".");
 		} else {
 			continue;
 		}
-			release_time = ktime_get();
-		}
-		if (string) {
-			if (mutex_lock_interruptible(&morse_buffer_mutex) < 0)
-				continue;
-			morse_buffer_put_str(string);
-			mutex_unlock(&morse_buffer_mutex);
-			wake_up_interruptible(&hello_morse_queue);
-		}
+
+                mutex_unlock(&morse_buffer_mutex);
+                wake_up_interruptible(&hello_morse_queue);
+            }
         }
 
         msleep(2);
@@ -333,6 +336,30 @@ static struct file_operations fops = {
 	.write = hello_write,
 	.release = hello_release,
 };
+
+static long hello_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+{
+    unsigned int unit;
+
+    switch (cmd) {
+    case MORSE_SET_UNIT:
+        if (copy_from_user(&unit, (unsigned int __user *)arg, sizeof(unit)))
+            return -EFAULT;
+        if (unit < 50 || unit > 2000)
+            return -EINVAL;
+        atomic_set(&morse_unit_ms, unit);
+        return 0;
+
+    case MORSE_GET_UNIT:
+        unit = atomic_read(&morse_unit_ms);
+        if (copy_to_user((unsigned int __user *)arg, &unit, sizeof(unit)))
+            return -EFAULT;
+        return 0;
+
+    default:
+        return -ENOTTY;
+    }
+}
 
 static dev_t dev;
 static struct cdev hello_cdev;
