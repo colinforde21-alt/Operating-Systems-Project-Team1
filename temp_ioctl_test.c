@@ -1,6 +1,5 @@
 #include <stdio.h>
 #include <fcntl.h>
-#include <sys/ioctl.h>
 #include <unistd.h>
 #include "morse_ioctl.h"
 
@@ -19,10 +18,6 @@ int main() {
     // set a new value
     unit = 1000;
     ioctl(fd, MORSE_SET_UNIT, &unit);
-    printf("unit set to 100ms\n");
-
-    // write something and watch the LED
-    write(fd, "hi", 2);
 
     // verify the read back
     ioctl(fd, MORSE_GET_UNIT, &unit);

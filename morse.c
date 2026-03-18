@@ -332,6 +332,7 @@ static struct file_operations fops = {
 	.read = hello_read,
 	.write = hello_write,
 	.release = hello_release,
+	.unlocked_ioctl = hello_ioctl, 
 };
 
 static long hello_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
