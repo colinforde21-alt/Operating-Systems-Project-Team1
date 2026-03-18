@@ -18,11 +18,6 @@
 #define LED_PIN 529
 #define BTN_PIN 514
 
-typedef struct {
-    char character;
-    const char *morse;
-} MorseEntry;
-
 static const char *letters[] = {
     ".-",   "-...", "-.-.", "-..",  ".",    "..-.", "--.",  "....",
     "..",   ".---", "-.-",  ".-..", "--",   "-.",   "---",  ".--.",
@@ -159,9 +154,11 @@ static int button_polling_thread(void *pv)
     	int last_sample = gpio_get_value(BTN_PIN);
     	int stable_state = last_sample;
  	int count = 1;
-	ktime_t press_time;
+	ktime_t press_time = ktime_get();
 	ktime_t release_time = ktime_get();
-
+	int polling_started_flag = 0;
+	char morse_letter[10];
+	int morse_letter_index = 0;
 
 	while (!kthread_should_stop()) {
 	int sample = gpio_get_value(BTN_PIN);
@@ -174,6 +171,7 @@ static int button_polling_thread(void *pv)
 	}
 
         if (count >= 5 && stable_state != last_sample) {
+
             stable_state = last_sample;
 
             char *string = NULL;
@@ -181,33 +179,37 @@ static int button_polling_thread(void *pv)
             if (stable_state == 0) {
                 press_time = ktime_get();
 
-		s64 time_between_presses = ktime_ms_delta(ktime_get(), release_time);
 
-		if (time_between_presses >= LETTER_GAP && time_between_presses < WORD_GAP)
-			string = " ";
-		else if (time_between_presses >= WORD_GAP)
-			string = "/";
-
-            } else {
+		if (polling_started_flag) {
+			s64 time_between_presses = ktime_ms_delta(ktime_get(), release_time);
+			if (time_between_presses >= LETTER_GAP && time_between_presses < WORD_GAP)
+				morse_letter[morse_letter_index++] = ' ';
+			else if (time_between_presses >= WORD_GAP)
+				morse_letter[morse_letter_index++] = '/';
+		}
+           } else {
                 s64 elapsed_ms = ktime_ms_delta(ktime_get(), press_time);
-
+		polling_started_flag = 1;
 
                 if (elapsed_ms >= DOT_DASH_THRESHOLD) {
-			string = "-";
+			morse_letter[morse_letter_index++] = '-';
                 } else if (elapsed_ms > 0) {
-                    	string = ".";
+                    	morse_letter[morse_letter_index++] = '.';
 		} else {
 			continue;
 		}
-			release_time = ktime_get();
-		}
-		if (string) {
-			if (mutex_lock_interruptible(&morse_buffer_mutex) < 0)
-				continue;
-			morse_buffer_put_str(string);
-			mutex_unlock(&morse_buffer_mutex);
-			wake_up_interruptible(&hello_morse_queue);
-		}
+		release_time = ktime_get();
+	  }
+	  if (morse_letter[morse_letter_index-1] == ' ' || morse_letter[morse_letter_index-1] == '/') {
+		morse_letter[morse_letter_index] = '\0';
+		if (mutex_lock_interruptible(&morse_buffer_mutex) < 0)
+			continue;
+		morse_buffer_put_str(morse_letter);
+		if (morse_letter[morse_letter_index-1] == '/')
+			morse_buffer_put_str(" ");
+		mutex_unlock(&morse_buffer_mutex);
+		wake_up_interruptible(&hello_morse_queue);
+	  }
         }
 
         msleep(2);
@@ -229,6 +231,7 @@ static ssize_t hello_read(struct file *filp, char __user *buf, size_t len, loff_
 		return -ERESTARTSYS;
 
 	while(len && !morse_buf_empty()) {
+
 		if (put_user(morse_buffer[morse_head], buf++)) {
 			mutex_unlock(&morse_buffer_mutex);
 			return -EFAULT;
