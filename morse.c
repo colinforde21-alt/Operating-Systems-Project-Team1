@@ -12,17 +12,14 @@
 #include <linux/delay.h>
 #include <linux/kthread.h>
 #include <linux/ktime.h>
-#include <linux/ioctl.h>
 #include <linux/atomic.h>
+#include "morse_ioctl.h"
 
 #define DEV_NAME "chardev"
 #define SIZE 256
 #define LED_PIN 529
 #define BTN_PIN 514
 
-#define MORSE_MAGIC 'M'
-#define MORSE_SET_UNIT _IOW(MORSE_MAGIC, 1, unsigned int)
-#define MORSE_GET_UNIT _IOR(MORSE_MAGIC, 2, unsigned int)
 
 typedef struct {
     char character;
