@@ -8,6 +8,7 @@
 #include <signal.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
+#include <sys/select.h>
 
 #define DEVICE_PATH "/dev/chardev"
 #define INPUT_BUF_SIZE 512
@@ -29,8 +30,7 @@ typedef struct {
 } thread_status_t;
 
 enum {
-    THREAD_INPUT = 0,
-    THREAD_WRITER,
+    THREAD_WRITER = 0,
     THREAD_READER,
     THREAD_MONITOR,
     THREAD_COUNT
@@ -40,11 +40,6 @@ static volatile sig_atomic_t keep_running = 1;
 
 static pthread_mutex_t status_mutex = PTHREAD_MUTEX_INITIALIZER;
 static thread_status_t statuses[THREAD_COUNT];
-
-static pthread_mutex_t input_mutex = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t input_cond = PTHREAD_COND_INITIALIZER;
-static char pending_input[INPUT_BUF_SIZE];
-static int input_ready = 0;
 
 static long get_tid_linux(void)
 {
@@ -121,282 +116,179 @@ static void handle_sigint(int sig)
 {
     (void)sig;
     keep_running = 0;
-    pthread_cond_broadcast(&input_cond);
 }
-
-static void *input_thread_fn(void *arg)
-{
-    (void)arg;
-    char line[INPUT_BUF_SIZE];
-
-    set_status(THREAD_INPUT, STATE_RUNNING, "Waiting for terminal input");
-
-    while (keep_running) {
-        printf("\nEnter text> ");
-        fflush(stdout);
-
-        if (fgets(line, sizeof(line), stdin) == NULL) {
-            if (feof(stdin)) {
-                keep_running = 0;
-                pthread_cond_broadcast(&input_cond);
-                break;
-            }
-            if (errno == EINTR) {
-                clearerr(stdin);
-                continue;
-            }
-            set_status(THREAD_INPUT, STATE_ERROR, "fgets() failed");
-            keep_running = 0;
-            pthread_cond_broadcast(&input_cond);
-            break;
-        }
-
-        line[strcspn(line, "\n")] = '\0';
-
-        if (strcmp(line, "quit") == 0) {
-            set_status(THREAD_INPUT, STATE_RUNNING, "Quit requested");
-            keep_running = 0;
-            pthread_cond_broadcast(&input_cond);
-            break;
-        }
-
-        if (line[0] == '\0') {
-            set_status(THREAD_INPUT, STATE_IDLE, "Empty line ignored");
-            continue;
-        }
-
-        pthread_mutex_lock(&input_mutex);
-        while (input_ready && keep_running) {
-            pthread_mutex_unlock(&input_mutex);
-            usleep(100000);
-            pthread_mutex_lock(&input_mutex);
-        }
-
-        if (!keep_running) {
-            pthread_mutex_unlock(&input_mutex);
-            break;
-        }
-
-        strncpy(pending_input, line, sizeof(pending_input) - 1);
-        pending_input[sizeof(pending_input) - 1] = '\0';
-        input_ready = 1;
-        pthread_cond_signal(&input_cond);
-        pthread_mutex_unlock(&input_mutex);
-
-        set_status(THREAD_INPUT, STATE_RUNNING, "Queued text for writer thread");
-    }
-
-    set_status(THREAD_INPUT, STATE_STOPPED, "Input thread exiting");
-    return NULL;
-}
-
-static void *writer_thread_fn(void *arg)
-{
-    (void)arg;
-    int fd;
-    char local_buf[INPUT_BUF_SIZE];
-
-    fd = open(DEVICE_PATH, O_WRONLY);
-    if (fd < 0) {
-        char msg[128];
-        snprintf(msg, sizeof(msg), "open(%s) failed: %s", DEVICE_PATH, strerror(errno));
-        set_status(THREAD_WRITER, STATE_ERROR, msg);
-        keep_running = 0;
-        pthread_cond_broadcast(&input_cond);
-        return NULL;
-    }
-
-    set_status(THREAD_WRITER, STATE_IDLE, "Waiting for queued text");
-
-    while (keep_running) {
-        pthread_mutex_lock(&input_mutex);
-        while (!input_ready && keep_running) {
-            set_status(THREAD_WRITER, STATE_IDLE, "No pending text");
-            pthread_cond_wait(&input_cond, &input_mutex);
-        }
-
-        if (!keep_running) {
-            pthread_mutex_unlock(&input_mutex);
-            break;
-        }
-
-        strncpy(local_buf, pending_input, sizeof(local_buf) - 1);
-        local_buf[sizeof(local_buf) - 1] = '\0';
-        input_ready = 0;
-        pthread_mutex_unlock(&input_mutex);
-
-        set_status(THREAD_WRITER, STATE_BLOCKED, "Calling write() on /dev/chardev");
-
-        ssize_t written = write(fd, local_buf, strlen(local_buf));
-
-        if (written < 0) {
-            if (errno == EINTR && keep_running) {
-                set_status(THREAD_WRITER, STATE_IDLE, "write() interrupted, retry later");
-                continue;
-            }
-            char msg[128];
-            snprintf(msg, sizeof(msg), "write() failed: %s", strerror(errno));
-            set_status(THREAD_WRITER, STATE_ERROR, msg);
-            keep_running = 0;
-            pthread_cond_broadcast(&input_cond);
-            break;
-        }
-
-        char msg[128];
-        snprintf(msg, sizeof(msg), "write() returned %zd for \"%s\"", written, local_buf);
-        set_status(THREAD_WRITER, STATE_RUNNING, msg);
-    }
-
-    close(fd);
-    set_status(THREAD_WRITER, STATE_STOPPED, "Writer thread exiting");
-    return NULL;
-}
-
-#include <sys/select.h>
 
 static void *reader_thread_fn(void *arg)
 {
     (void)arg;
     int fd;
-    char buf[64];
+    char buf[MORSE_READ_SIZE];
 
-    fd = open("/dev/chardev", O_RDONLY);
+    fd = open(DEVICE_PATH, O_RDONLY);
     if (fd < 0) {
-        perror("reader open failed");
+        char msg[128];
+        snprintf(msg, sizeof(msg), "open failed: %s", strerror(errno));
+        set_status(THREAD_READER, STATE_ERROR, msg);
         return NULL;
     }
 
     while (keep_running) {
-
         fd_set set;
         struct timeval timeout;
 
         FD_ZERO(&set);
         FD_SET(fd, &set);
 
-        timeout.tv_sec = 2;
+        timeout.tv_sec = 1;
         timeout.tv_usec = 0;
 
-        set_status(THREAD_READER, STATE_BLOCKED,
-                   "Waiting for Morse input");
+        set_status(THREAD_READER, STATE_BLOCKED, "Waiting for Morse input");
 
         int rv = select(fd + 1, &set, NULL, NULL, &timeout);
 
         if (!keep_running)
             break;
 
-        if (rv == -1) {
-            continue;
+        if (rv < 0) {
+            if (errno == EINTR)
+                continue;
+
+            char msg[128];
+            snprintf(msg, sizeof(msg), "select failed: %s", strerror(errno));
+            set_status(THREAD_READER, STATE_ERROR, msg);
+            break;
         }
 
-        if (rv == 0) {
-            // timeout → loop again
+        if (rv == 0)
             continue;
-        }
 
         ssize_t n = read(fd, buf, sizeof(buf) - 1);
+        if (n < 0) {
+            if (errno == EINTR)
+                continue;
+
+            char msg[128];
+            snprintf(msg, sizeof(msg), "read failed: %s", strerror(errno));
+            set_status(THREAD_READER, STATE_ERROR, msg);
+            break;
+        }
 
         if (n > 0) {
             buf[n] = '\0';
 
-            char msg[128];
-            snprintf(msg, sizeof(msg),
-                     "Received: %s", buf);
+            for (ssize_t i = 0; i < n; i++) {
+                if (buf[i] == '\n' || buf[i] == '\r')
+                    buf[i] = ' ';
+            }
 
-            set_status(THREAD_READER,
-                       STATE_RUNNING,
-                       msg);
+            char msg[128];
+            snprintf(msg, sizeof(msg), "Received: %s", buf);
+            set_status(THREAD_READER, STATE_RUNNING, msg);
         }
     }
 
     close(fd);
-    set_status(THREAD_READER,
-               STATE_STOPPED,
-               "Reader exiting");
-
+    set_status(THREAD_READER, STATE_STOPPED, "Reader exiting");
     return NULL;
-}                         
-
-
-
-
-                   
+}
 
 static void *monitor_thread_fn(void *arg)
 {
     (void)arg;
-
     set_status(THREAD_MONITOR, STATE_RUNNING, "Printing thread states");
 
     while (keep_running) {
         print_status_snapshot();
-        sleep(1);
+        sleep(2);
     }
 
-    print_status_snapshot();
-    set_status(THREAD_MONITOR, STATE_STOPPED, "Monitor thread exiting");
+    set_status(THREAD_MONITOR, STATE_STOPPED, "Monitor exiting");
     return NULL;
 }
 
 int main(void)
 {
-    pthread_t input_thread;
-    pthread_t writer_thread;
-    pthread_t reader_thread;
-    pthread_t monitor_thread;
+    pthread_t reader_thread, monitor_thread;
+    int fd;
+    char line[INPUT_BUF_SIZE];
 
     signal(SIGINT, handle_sigint);
 
-    init_status(THREAD_INPUT, "Input");
     init_status(THREAD_WRITER, "Writer");
     init_status(THREAD_READER, "Reader");
     init_status(THREAD_MONITOR, "Monitor");
 
-    if (pthread_create(&input_thread, NULL, input_thread_fn, NULL) != 0) {
-        perror("pthread_create input");
-        return 1;
-    }
-
-    if (pthread_create(&writer_thread, NULL, writer_thread_fn, NULL) != 0) {
-        perror("pthread_create writer");
-        keep_running = 0;
-        pthread_cond_broadcast(&input_cond);
-        pthread_join(input_thread, NULL);
+    fd = open(DEVICE_PATH, O_WRONLY);
+    if (fd < 0) {
+        perror("open writer device failed");
         return 1;
     }
 
     if (pthread_create(&reader_thread, NULL, reader_thread_fn, NULL) != 0) {
         perror("pthread_create reader");
-        keep_running = 0;
-        pthread_cond_broadcast(&input_cond);
-        pthread_join(input_thread, NULL);
-        pthread_join(writer_thread, NULL);
+        close(fd);
         return 1;
     }
 
     if (pthread_create(&monitor_thread, NULL, monitor_thread_fn, NULL) != 0) {
         perror("pthread_create monitor");
         keep_running = 0;
-        pthread_cond_broadcast(&input_cond);
-        pthread_join(input_thread, NULL);
-        pthread_join(writer_thread, NULL);
         pthread_join(reader_thread, NULL);
+        close(fd);
         return 1;
     }
 
-    pthread_join(input_thread, NULL);
+    while (keep_running) {
+        printf("\nEnter text (or 'quit'): ");
+        fflush(stdout);
+
+        if (fgets(line, sizeof(line), stdin) == NULL) {
+            if (feof(stdin))
+                break;
+
+            if (errno == EINTR) {
+                clearerr(stdin);
+                continue;
+            }
+
+            break;
+        }
+
+        line[strcspn(line, "\n")] = '\0';
+
+        if (strcmp(line, "quit") == 0) {
+            keep_running = 0;
+            break;
+        }
+
+        if (line[0] == '\0')
+            continue;
+
+        set_status(THREAD_WRITER, STATE_BLOCKED, "Calling write() on /dev/chardev");
+
+        ssize_t written = write(fd, line, strlen(line));
+        if (written < 0) {
+            char msg[128];
+            snprintf(msg, sizeof(msg), "write failed: %s", strerror(errno));
+            set_status(THREAD_WRITER, STATE_ERROR, msg);
+            keep_running = 0;
+            break;
+        }
+
+        char msg[128];
+        snprintf(msg, sizeof(msg), "Wrote %zd byte(s): %s", written, line);
+        set_status(THREAD_WRITER, STATE_RUNNING, msg);
+    }
 
     keep_running = 0;
-    pthread_cond_broadcast(&input_cond);
+    close(fd);
 
     pthread_kill(reader_thread, SIGINT);
     pthread_kill(monitor_thread, SIGINT);
-    pthread_kill(writer_thread, SIGINT);
 
-    pthread_join(writer_thread, NULL);
     pthread_join(reader_thread, NULL);
     pthread_join(monitor_thread, NULL);
 
-    printf("\nUser-space application exited.\n");
+    printf("\nApplication exited cleanly.\n");
     return 0;
 }
