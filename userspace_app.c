@@ -8,6 +8,7 @@
 #include <signal.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
+#include "morse_ioctl.h"
 
 #define DEVICE_PATH "/dev/chardev"
 #define INPUT_BUF_SIZE 512
@@ -162,6 +163,15 @@ static void *input_thread_fn(void *arg)
 
         if (line[0] == '\0') {
             set_status(THREAD_INPUT, STATE_IDLE, "Empty line ignored");
+            continue;
+        }
+        
+        if (strncmp(line, "unit=", 5) == 0) {
+            do_set_unit(line + 5);
+            continue; 
+        }
+        if (strcmp(line, "unit?") == 0) {
+            do_get_unit();
             continue;
         }
 
@@ -331,6 +341,31 @@ static void *monitor_thread_fn(void *arg)
     print_status_snapshot();
     set_status(THREAD_MONITOR, STATE_STOPPED, "Monitor thread exiting");
     return NULL;
+}
+
+static void set_unit(const char *arg) {
+    unsigned int unit = (unsigned int)atoi(arg);
+    int fd = open(DEVICE_PATH, O_RDWR);
+    if (fd < 0) { perror("open"); return; }
+
+    if (ioctl(fd, MORSE_SET_UNIT, &unit) < 0)
+        perror("ioctl SET_UNIT");
+    else
+        printf("Unit set to %u ms\n", unit);
+
+    close(fd);
+}
+static void get_unit(void) {
+    unsigned int unit;
+    int fd = open(DEVICE_PATH, O_RDWR);
+    if (fd < 0) { perror("open"); return; }
+
+    if (ioctl(fd, MORSE_GET_UNIT, &unit) < 0)
+        perror("ioctl GET_UNIT");
+    else
+        printf("Current unit: %u ms\n", unit);
+
+    close(fd);
 }
 
 int main(void)
