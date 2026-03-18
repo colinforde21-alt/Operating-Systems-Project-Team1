@@ -13,6 +13,8 @@
 #include <linux/kthread.h>
 #include <linux/ktime.h>
 #include <linux/atomic.h>
+#include <linux/proc_fs.h>
+#include <linux/seq_file.h>
 #include "morse_ioctl.h"
 
 #define DEV_NAME "chardev"
@@ -413,6 +415,41 @@ static struct cdev hello_cdev;
 static struct class *hello_class;
 static struct device *hello_device;
 
+static int morse_proc_show(struct seq_file *m, void *v)
+{
+    int led_used, morse_used;
+    int lh, lt, mh, mt;
+
+    mutex_lock(&led_buffer_mutex);
+    lh = led_head;
+    lt = led_tail;
+    led_used = (lt - lh + SIZE) % SIZE;
+    mutex_unlock(&led_buffer_mutex);
+
+    mutex_lock(&morse_buffer_mutex);
+    mh = morse_head;
+    mt = morse_tail;
+    morse_used = (mt - mh + SIZE) % SIZE;
+    mutex_unlock(&morse_buffer_mutex);
+
+    seq_printf(m, "LED Buffer:   Head: %d, Tail: %d, Used: %d/%d\n",
+               lh, lt, led_used, SIZE);
+    seq_printf(m, "Morse Buffer: Head: %d, Tail: %d, Used: %d/%d\n",
+               mh, mt, morse_used, SIZE);
+    return 0;
+}
+static int morse_proc_open(struct inode *inode, struct file *file)
+{
+    return single_open(file, morse_proc_show, NULL);
+}
+
+static const struct proc_ops morse_proc_ops = {
+    .proc_open    = morse_proc_open,
+    .proc_read    = seq_read,
+    .proc_lseek   = seq_lseek,
+    .proc_release = single_release,
+};
+
 static int __init hello_init(void)
 {
 	if (gpio_request(LED_PIN, "led") < 0)
@@ -448,6 +485,7 @@ static int __init hello_init(void)
 		pr_alert("Creating device failed!\n");
 		goto r_device;
 	}
+	proc_create("morse_buffers", 0444, NULL, &morse_proc_ops);
 
 	led_thread = kthread_run(led_write_thread, NULL, "LED Thread");
 	if (IS_ERR(led_thread)) {
@@ -479,6 +517,7 @@ r_region:
 
 static void __exit hello_exit(void)
 {
+	remove_proc_entry("morse_buffers", NULL);
 	kthread_stop(led_thread);
 	kthread_stop(morse_thread);
 	device_destroy(hello_class, dev);
