@@ -115,7 +115,9 @@ static void print_status_snapshot(void)
 static void handle_sigint(int sig)
 {
     (void)sig;
-    keep_running = 0;
+	printf("\nCtrl+c pressed. Exiting program...\n");
+	fflush(stdout);
+    	exit(0);
 }
 
 static void *reader_thread_fn(void *arg)
@@ -258,8 +260,11 @@ int main(void)
 
         if (strcmp(line, "quit") == 0) {
             keep_running = 0;
-            break;
-        }
+	    close(fd);
+		printf("\nExiting program...\n");
+		fflush(stdout);
+		exit(0);	
+         }
 
         if (line[0] == '\0')
             continue;
