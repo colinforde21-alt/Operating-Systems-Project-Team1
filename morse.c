@@ -327,14 +327,6 @@ static int hello_release(struct inode *inode, struct file *file)
 	pr_info("Closing file!\n");
 	return 0;
 }
-static struct file_operations fops = {
-	.open = hello_open,
-	.read = hello_read,
-	.write = hello_write,
-	.release = hello_release,
-	.unlocked_ioctl = hello_ioctl, 
-};
-
 static long hello_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
     unsigned int unit;
@@ -358,6 +350,13 @@ static long hello_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
         return -ENOTTY;
     }
 }
+static struct file_operations fops = {
+	.open = hello_open,
+	.read = hello_read,
+	.write = hello_write,
+	.release = hello_release,
+	.unlocked_ioctl = hello_ioctl, 
+};
 
 static dev_t dev;
 static struct cdev hello_cdev;
