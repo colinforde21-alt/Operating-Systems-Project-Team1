@@ -200,12 +200,7 @@ static int button_polling_thread(void *pv)
 
         if (sample == last_sample) {
             count++;
-        if (sample == last_sample) {
-            count++;
         } else {
-            last_sample = sample;
-            count = 1;
-        }
             last_sample = sample;
             count = 1;
         }
@@ -223,7 +218,7 @@ static int button_polling_thread(void *pv)
                 if (mutex_lock_interruptible(&morse_buffer_mutex) < 0)
                     continue;
 
-                if (elapsed_ms >= DOT_DASH_THRESHOLD) {
+                if (elapsed_ms >= threshold) {
                     if (morse_letter_index < sizeof(morse_letter) - 1)
                         morse_letter[morse_letter_index++] = '-';
                 } else if (elapsed_ms > 0) {
@@ -240,9 +235,9 @@ static int button_polling_thread(void *pv)
             s64 since_release = ktime_ms_delta(ktime_get(), release_time);
             char gap = 0;
 
-            if (since_release >= WORD_GAP)
+            if (since_release >= get_word_gap())
                 gap = '/';
-            else if (since_release >= LETTER_GAP)
+            else if (since_release >= get_let_gap())
                 gap = ' ';
 
             if (gap && morse_letter_index > 0) {
