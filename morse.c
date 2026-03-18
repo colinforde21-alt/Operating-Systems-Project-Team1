@@ -149,15 +149,35 @@ static bool morse_buffer_put_str(const char *s)
     return true;
 }
 
+static char morse_to_letter(const char *morse){
+	int i;
+	pr_info("comparing against morse inpput: '%s' len=%zu\n", morse, strlen(morse));
+	for (i = 0; i< 26; i++) {
+		if (strcmp(morse, letters[i]) == 0)
+			return 'A' + i;
+	}
+
+	for (i = 0; i< 10; i++) {
+		if (strcmp(morse, digits[i]) == 0)
+			return '0' + i;
+	}
+
+	if (strcmp(morse, "/") == 0)
+		return ' ';
+
+	return '?';
+}
+
 static int button_polling_thread(void *pv)
 {
-    int last_sample      = gpio_get_value(BTN_PIN);
-    int stable_state     = last_sample;
-    int count            = 1;
-    ktime_t press_time   = ktime_get();
+    int last_sample = gpio_get_value(BTN_PIN);
+    int stable_state = last_sample;
+    int count = 1;
+    ktime_t press_time = ktime_get();
     ktime_t release_time = ktime_get();
-    bool started         = false;
-    bool gap_inserted    = false;
+    bool started = false;
+    bool word_gap_inserted = false;
+	bool letter_gap_inserted = false;
     char morse_letter[10];
     int morse_letter_index = 0;
 
@@ -175,12 +195,11 @@ static int button_polling_thread(void *pv)
             stable_state = last_sample;
 
             if (stable_state == 0) {
-                /* press */
-                press_time   = ktime_get();
-                gap_inserted = false;
+                press_time = ktime_get();
+                letter_gap_inserted = false;
+				word_gap_inserted = false;
 
             } else {
-                /* release */
                 s64 elapsed_ms = ktime_ms_delta(ktime_get(), press_time);
 
                 if (elapsed_ms >= DOT_DASH_THRESHOLD) {
@@ -192,34 +211,36 @@ static int button_polling_thread(void *pv)
                 }
 
                 release_time = ktime_get();
-                started      = true;
+                started = true;
             }
         }
 
-        /* gap timeout — flush letter to morse_buffer */
-        if (started && !gap_inserted && stable_state == 1) {
-            s64 since_release = ktime_ms_delta(ktime_get(), release_time);
-            char gap = 0;
+		if (started && stable_state == 1) {
+			s64 since_release = ktime_ms_delta(ktime_get(), release_time);
 
-            if (since_release >= WORD_GAP)
-                gap = '/';
-            else if (since_release >= LETTER_GAP)
-                gap = ' ';
+			if (since_release >= WORD_GAP && !word_gap_inserted) {
+				word_gap_inserted = true;
+				if (mutex_lock_interruptible(&morse_buffer_mutex) >= 0) {
+					morse_buffer_put_char(' ');
+					mutex_unlock(&morse_buffer_mutex);
+					wake_up_interruptible(&hello_morse_queue);
+				}
 
-            if (gap && morse_letter_index > 0) {
-                morse_letter[morse_letter_index] = gap;
-                morse_letter[morse_letter_index + 1] = '\0';
+			} else if (since_release >= LETTER_GAP && !letter_gap_inserted) {
+				letter_gap_inserted = true;
+				morse_letter[morse_letter_index] = '\0';
+				char letter = morse_to_letter(morse_letter);
+				pr_info("letter gap: '%s' -> '%c'\n", morse_letter, letter);
+				if (mutex_lock_interruptible(&morse_buffer_mutex) >= 0) {
+					morse_buffer_put_char(letter);
+					mutex_unlock(&morse_buffer_mutex);
+					wake_up_interruptible(&hello_morse_queue);
+				}
+				morse_letter_index = 0;
+				memset(morse_letter, 0, sizeof(morse_letter));
+			}
+		}
 
-                if (mutex_lock_interruptible(&morse_buffer_mutex) >= 0) {
-                    morse_buffer_put_str(morse_letter);
-                    mutex_unlock(&morse_buffer_mutex);
-                    wake_up_interruptible(&hello_morse_queue);
-                }
-
-                morse_letter_index = 0;
-                gap_inserted       = true;
-            }
-        }
 
         msleep(2);
     }
