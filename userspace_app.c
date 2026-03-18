@@ -252,70 +252,75 @@ static void *writer_thread_fn(void *arg)
     return NULL;
 }
 
+#include <sys/select.h>
+
 static void *reader_thread_fn(void *arg)
 {
     (void)arg;
     int fd;
-    char buf[MORSE_READ_SIZE];
+    char buf[64];
 
-    fd = open(DEVICE_PATH, O_RDONLY);
+    fd = open("/dev/chardev", O_RDONLY);
     if (fd < 0) {
-        char msg[128];
-        snprintf(msg, sizeof(msg), "open(%s) failed: %s", DEVICE_PATH, strerror(errno));
-        set_status(THREAD_READER, STATE_ERROR, msg);
-        keep_running = 0;
-        pthread_cond_broadcast(&input_cond);
+        perror("reader open failed");
         return NULL;
     }
 
-    set_status(THREAD_READER, STATE_BLOCKED, "Waiting in blocking read()");
-
     while (keep_running) {
-        ssize_t n;
 
-        set_status(THREAD_READER, STATE_BLOCKED, "Calling blocking read() on /dev/chardev");
-        n = read(fd, buf, sizeof(buf) - 1);
+        fd_set set;
+        struct timeval timeout;
 
-        if (!keep_running) {
+        FD_ZERO(&set);
+        FD_SET(fd, &set);
+
+        timeout.tv_sec = 2;
+        timeout.tv_usec = 0;
+
+        set_status(THREAD_READER, STATE_BLOCKED,
+                   "Waiting for Morse input");
+
+        int rv = select(fd + 1, &set, NULL, NULL, &timeout);
+
+        if (!keep_running)
             break;
-        }
 
-        if (n < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
-            char msg[128];
-            snprintf(msg, sizeof(msg), "read() failed: %s", strerror(errno));
-            set_status(THREAD_READER, STATE_ERROR, msg);
-            keep_running = 0;
-            pthread_cond_broadcast(&input_cond);
-            break;
-        }
-
-        if (n == 0) {
-            set_status(THREAD_READER, STATE_IDLE, "read() returned 0");
+        if (rv == -1) {
             continue;
         }
 
-        buf[n] = '\0';
-
-        for (ssize_t i = 0; i < n; i++) {
-            if (buf[i] == '\n' || buf[i] == '\r') {
-                buf[i] = ' ';
-            }
+        if (rv == 0) {
+            // timeout → loop again
+            continue;
         }
 
-        char msg[128];
-        snprintf(msg, sizeof(msg), "Received Morse input: \"%s\"", buf);
-        set_status(THREAD_READER, STATE_RUNNING, msg);
+        ssize_t n = read(fd, buf, sizeof(buf) - 1);
 
-        usleep(300000);
+        if (n > 0) {
+            buf[n] = '\0';
+
+            char msg[128];
+            snprintf(msg, sizeof(msg),
+                     "Received: %s", buf);
+
+            set_status(THREAD_READER,
+                       STATE_RUNNING,
+                       msg);
+        }
     }
 
     close(fd);
-    set_status(THREAD_READER, STATE_STOPPED, "Reader thread exiting");
+    set_status(THREAD_READER,
+               STATE_STOPPED,
+               "Reader exiting");
+
     return NULL;
-}
+}                         
+
+
+
+
+                   
 
 static void *monitor_thread_fn(void *arg)
 {
