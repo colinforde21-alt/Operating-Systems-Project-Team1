@@ -156,43 +156,58 @@ static bool morse_buffer_put_str(const char *s)
 
 static int button_polling_thread(void *pv)
 {
-    int last_sample = gpio_get_value(BTN_PIN);
-    int stable_state = last_sample;
-    int count = 1;
-    ktime_t press_time;
+    	int last_sample = gpio_get_value(BTN_PIN);
+    	int stable_state = last_sample;
+ 	int count = 1;
+	ktime_t press_time;
+	ktime_t release_time = ktime_get();
 
-    while (!kthread_should_stop()) {
-        int sample = gpio_get_value(BTN_PIN);
 
-        if (sample == last_sample) {
-            count++;
+	while (!kthread_should_stop()) {
+	int sample = gpio_get_value(BTN_PIN);
+
+	if (sample == last_sample) {
+ 		count++;
         } else {
-            last_sample = sample;
-            count = 1;
-        }
+		last_sample = sample;
+		count = 1;
+	}
 
         if (count >= 5 && stable_state != last_sample) {
             stable_state = last_sample;
 
+            char *string = NULL;
+
             if (stable_state == 0) {
                 press_time = ktime_get();
+
+		s64 time_between_presses = ktime_ms_delta(ktime_get(), release_time);
+
+		if (time_between_presses >= LETTER_GAP && time_between_presses < WORD_GAP)
+			string = " ";
+		else if (time_between_presses >= WORD_GAP)
+			string = "/";
+
             } else {
                 s64 elapsed_ms = ktime_ms_delta(ktime_get(), press_time);
 
-                if (mutex_lock_interruptible(&morse_buffer_mutex) < 0)
-                    continue;
 
                 if (elapsed_ms >= DOT_DASH_THRESHOLD) {
-                    morse_buffer_put_str("-");
+			string = "-";
                 } else if (elapsed_ms > 0) {
-                    morse_buffer_put_str(".");
+                    	string = ".";
 		} else {
 			continue;
 		}
-
-                mutex_unlock(&morse_buffer_mutex);
-                wake_up_interruptible(&hello_morse_queue);
-            }
+			release_time = ktime_get();
+		}
+		if (string) {
+			if (mutex_lock_interruptible(&morse_buffer_mutex) < 0)
+				continue;
+			morse_buffer_put_str(string);
+			mutex_unlock(&morse_buffer_mutex);
+			wake_up_interruptible(&hello_morse_queue);
+		}
         }
 
         msleep(2);
