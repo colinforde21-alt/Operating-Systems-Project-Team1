@@ -13,12 +13,25 @@
 #include <linux/kthread.h>
 #include <linux/ktime.h>
 #include <linux/atomic.h>
+#include <linux/proc_fs.h>
+#include <linux/seq_file.h>
 #include "morse_ioctl.h"
 
 #define DEV_NAME "chardev"
 #define SIZE 256
 #define LED_PIN 529
 #define BTN_PIN 514
+
+static struct proc_dir_entry *morse_proc;
+
+static atomic_t total_opens = ATOMIC_INIT(0);
+static atomic_t total_closes = ATOMIC_INIT(0);
+static atomic_t total_bytes_written = ATOMIC_INIT(0);
+static atomic_t total_bytes_read = ATOMIC_INIT(0);
+static atomic_t total_dots = ATOMIC_INIT(0);
+static atomic_t total_dashes = ATOMIC_INIT(0);
+static atomic_t total_decoded_chars = ATOMIC_INIT(0);
+static atomic_t total_invalid_chars = ATOMIC_INIT(0);
 
 static const char *letters[] = {
     ".-",   "-...", "-.-.", "-..",  ".",    "..-.", "--.",  "....",
@@ -118,12 +131,14 @@ static int led_write_thread(void *pv)
 
 		switch(c) {
 			case '.':
+				atomic_inc(&total_dots);
 				gpio_set_value(LED_PIN, 1);
 				msleep(get_dot());
 				gpio_set_value(LED_PIN, 0);
 				msleep(get_sym_gap());
 				break;
 			case '-':
+				atomic_inc(&total_dashes);
 				gpio_set_value(LED_PIN, 1);
 				msleep(get_dash());
 				gpio_set_value(LED_PIN, 0);
@@ -246,6 +261,12 @@ static int button_polling_thread(void *pv)
 				morse_letter[morse_letter_index] = '\0';
 				pr_info("morse_letter: '%s' index = %d\n", morse_letter, morse_letter_index);
 				char letter = morse_to_letter(morse_letter);
+
+				if (letter == '?')
+					atomic_inc(&total_invalid_chars);
+				else
+					atomic_inc(&total_decoded_chars);
+
 				pr_info("letter: '%c'\n", letter);
 				if (mutex_lock_interruptible(&morse_buffer_mutex) >= 0) {
 					morse_buffer_put_char(letter);
@@ -263,7 +284,49 @@ static int button_polling_thread(void *pv)
     return 0;
 }
 
+static int led_buf_count(void)
+{
+	if (led_tail >= led_head)
+		return led_tail - led_head;
+	return SIZE - (led_head - led_tail);
+}
 
+static int morse_buf_count(void)
+{
+	if (morse_tail >= morse_head)
+		return morse_tail - morse_head;
+	return SIZE - (morse_head - morse_tail);
+}
+
+static int morse_proc_show(struct seq_file *m, void *v)
+{
+	seq_printf(m, "Morse LKM statistics\n\n");
+
+	seq_printf(m, "opens: %d\n", atomic_read(&total_opens));
+	seq_printf(m, "closes: %d\n", atomic_read(&total_closes));
+	seq_printf(m, "bytes written: %d\n", atomic_read(&total_bytes_written));
+	seq_printf(m, "bytes read: %d\n", atomic_read(&total_bytes_read));
+	seq_printf(m, "dots flashed: %d\n", atomic_read(&total_dots));
+	seq_printf(m, "dashes flashed: %d\n", atomic_read(&total_dashes));
+	seq_printf(m, "decoded chars: %d\n", atomic_read(&total_decoded_chars));
+	seq_printf(m, "invalid chars: %d\n", atomic_read(&total_invalid_chars));
+	seq_printf(m, "unit ms: %d\n", atomic_read(&morse_unit_ms));
+	seq_printf(m, "led buffer used: %d\n", led_buf_count());
+	seq_printf(m, "morse buffer used: %d\n", morse_buf_count());
+
+	return 0;
+}
+
+static int morse_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, morse_proc_show, NULL);
+}
+
+static const struct proc_ops morse_proc_ops = {
+	.proc_open = morse_proc_open,
+	.proc_read = seq_read,
+	.proc_release = single_release,
+};
 
 static ssize_t hello_read(struct file *filp, char __user *buf, size_t len, loff_t *off)
 {
@@ -290,6 +353,8 @@ static ssize_t hello_read(struct file *filp, char __user *buf, size_t len, loff_
 	mutex_unlock(&morse_buffer_mutex);
 
 	wake_up_interruptible(&hello_morse_queue);
+
+	atomic_add(bytes_read, &total_bytes_read);
 
 	return (ssize_t) bytes_read;
 }
@@ -362,16 +427,20 @@ static ssize_t hello_write(struct file *filp, const char __user *buf, size_t len
 
     wake_up_interruptible(&hello_led_queue);
 
+    atomic_add(bytes_written, &total_bytes_written);
+
     return (ssize_t) bytes_written;
 }
 
 static int hello_open(struct inode *inode, struct file *file)
 {
+	atomic_inc(&total_opens);
 	pr_info("Opening file!\n");
 	return 0;
 }
 static int hello_release(struct inode *inode, struct file *file)
 {
+	atomic_inc(&total_closes);
 	pr_info("Closing file!\n");
 	return 0;
 }
@@ -459,8 +528,17 @@ static int __init hello_init(void)
 		kthread_stop(led_thread);
 		goto r_thread;
 	}
+
+	morse_proc = proc_create("morse_stats", 0444, NULL, &morse_proc_ops);
+	if (!morse_proc) {
+		pr_err("Cannot create proc file!\n");
+		goto r_proc;
+	}
 	return 0;
 
+r_proc:
+	kthread_stop(morse_thread);
+	kthread_stop(led_thread);
 r_thread:
 	device_destroy(hello_class, dev);
 r_device:
@@ -477,8 +555,9 @@ r_region:
 
 static void __exit hello_exit(void)
 {
-	kthread_stop(led_thread);
+	proc_remove(morse_proc);
 	kthread_stop(morse_thread);
+	kthread_stop(led_thread);
 	device_destroy(hello_class, dev);
 	class_destroy(hello_class);
 	cdev_del(&hello_cdev);
