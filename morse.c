@@ -243,7 +243,7 @@ static int button_polling_thread(void *pv)
                 gap = ' ';
 
             if (gap && morse_letter_index > 0) {
-                morse_letter[morse_letter_index + 1] = '\0';
+                morse_letter[morse_letter_index] = '\0';
 		pr_info("morse_letter: %s index = %d\n", morse_letter, morse_letter_index);
 		char letter = morse_to_letter(morse_letter);
 		pr_info("letter: %c\n", letter);

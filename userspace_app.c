@@ -95,6 +95,20 @@ static void init_status(int idx, const char *name)
     pthread_mutex_unlock(&status_mutex);
 }
 
+static void print_buffers(void)
+{
+    FILE *f = fopen("/proc/morse_buffers", "r");
+    if (!f) {
+        printf("Could not read /proc/morse_buffers (module loaded?)\n");
+        return;
+    }
+    char line[128];
+    while (fgets(line, sizeof(line), f))
+        printf("  %s", line);
+    fclose(f);
+    fflush(stdout);
+}
+
 static void print_status_snapshot(void)
 {
     pthread_mutex_lock(&status_mutex);
@@ -109,13 +123,13 @@ static void print_status_snapshot(void)
                state_to_string(statuses[i].state),
                statuses[i].detail);
     }
-    printf("----------------------------------------------------\n");
+    pthread_mutex_unlock(&status_mutex);
+    print_buffers();
+    printf("====================================================\n");
     printf("  Device : " DEVICE_PATH "\n");
     printf("  Type 'help' for available commands.\n");
-    printf("====================================================\n");
+    printf("====================================================\n\n");
     fflush(stdout);
-
-    pthread_mutex_unlock(&status_mutex);
 }
 
 static void handle_sigint(int sig)
@@ -156,7 +170,6 @@ static void print_help(void)
     printf("  status     - print thread status\n");
     printf("  unit=<ms>  - set morse unit size (50-2000)\n");
     printf("  unit?      - get current unit size\n");
-    printf("  buffers    - show kernel buffer state\n");
     printf("  help       - show this message\n");
     printf("  quit       - exit\n\n");
     fflush(stdout);
@@ -387,6 +400,8 @@ int main(void)
     init_status(THREAD_WRITER, "Writer");
     init_status(THREAD_READER, "Reader");
 
+    pthread_barrier_init(&startup_barrier, NULL, 4);
+
     if (pthread_create(&input_thread, NULL, input_thread_fn, NULL) != 0) {
         perror("pthread_create input");
         return 1;
@@ -409,7 +424,6 @@ int main(void)
         return 1;
     }
 
-    pthread_barrier_init(&startup_barrier, NULL, 4);
     pthread_barrier_wait(&startup_barrier); // blocks until all 3 threads are ready
     print_status_snapshot();
 
