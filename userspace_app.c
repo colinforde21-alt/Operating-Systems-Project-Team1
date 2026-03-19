@@ -33,7 +33,6 @@ enum {
     THREAD_INPUT = 0,
     THREAD_WRITER,
     THREAD_READER,
-    THREAD_MONITOR,
     THREAD_COUNT
 };
 
@@ -125,6 +124,43 @@ static void handle_sigint(int sig)
     pthread_cond_broadcast(&input_cond);
 }
 
+static void set_unit(const char *arg) {
+    unsigned int unit = (unsigned int)atoi(arg);
+    int fd = open(DEVICE_PATH, O_RDWR);
+    if (fd < 0) { perror("open"); return; }
+
+    if (ioctl(fd, MORSE_SET_UNIT, &unit) < 0)
+        perror("ioctl SET_UNIT");
+    else
+        printf("Unit set to %u ms\n", unit);
+
+    close(fd);
+}
+static void get_unit(void) {
+    unsigned int unit;
+    int fd = open(DEVICE_PATH, O_RDWR);
+    if (fd < 0) { perror("open"); return; }
+
+    if (ioctl(fd, MORSE_GET_UNIT, &unit) < 0)
+        perror("ioctl GET_UNIT");
+    else
+        printf("Current unit: %u ms\n", unit);
+
+    close(fd);
+}
+
+static void print_help(void)
+{
+    printf("\nCommands:\n");
+    printf("  status     - print thread status\n");
+    printf("  unit=<ms>  - set morse unit size (50-2000)\n");
+    printf("  unit?      - get current unit size\n");
+    printf("  buffers    - show kernel buffer state\n");
+    printf("  help       - show this message\n");
+    printf("  quit       - exit\n\n");
+    fflush(stdout);
+}
+
 static void *input_thread_fn(void *arg)
 {
     (void)arg;
@@ -167,11 +203,19 @@ static void *input_thread_fn(void *arg)
         }
         
         if (strncmp(line, "unit=", 5) == 0) {
-            do_set_unit(line + 5);
+            set_unit(line + 5);
             continue; 
         }
         if (strcmp(line, "unit?") == 0) {
-            do_get_unit();
+            get_unit();
+            continue;
+        }
+        if (strcmp(line, "status") == 0) {
+            print_status_snapshot();
+            continue;
+        }
+        if (strcmp(line, "help") == 0) {
+            print_help();
             continue;
         }
 
@@ -319,7 +363,6 @@ static void *reader_thread_fn(void *arg)
         snprintf(msg, sizeof(msg), "Received Morse input: \"%s\"", buf);
         set_status(THREAD_READER, STATE_RUNNING, msg);
 
-        usleep(300000);
     }
 
     close(fd);
@@ -327,60 +370,18 @@ static void *reader_thread_fn(void *arg)
     return NULL;
 }
 
-static void *monitor_thread_fn(void *arg)
-{
-    (void)arg;
-
-    set_status(THREAD_MONITOR, STATE_RUNNING, "Printing thread states");
-
-    while (keep_running) {
-        print_status_snapshot();
-        sleep(1);
-    }
-
-    print_status_snapshot();
-    set_status(THREAD_MONITOR, STATE_STOPPED, "Monitor thread exiting");
-    return NULL;
-}
-
-static void set_unit(const char *arg) {
-    unsigned int unit = (unsigned int)atoi(arg);
-    int fd = open(DEVICE_PATH, O_RDWR);
-    if (fd < 0) { perror("open"); return; }
-
-    if (ioctl(fd, MORSE_SET_UNIT, &unit) < 0)
-        perror("ioctl SET_UNIT");
-    else
-        printf("Unit set to %u ms\n", unit);
-
-    close(fd);
-}
-static void get_unit(void) {
-    unsigned int unit;
-    int fd = open(DEVICE_PATH, O_RDWR);
-    if (fd < 0) { perror("open"); return; }
-
-    if (ioctl(fd, MORSE_GET_UNIT, &unit) < 0)
-        perror("ioctl GET_UNIT");
-    else
-        printf("Current unit: %u ms\n", unit);
-
-    close(fd);
-}
 
 int main(void)
 {
     pthread_t input_thread;
     pthread_t writer_thread;
     pthread_t reader_thread;
-    pthread_t monitor_thread;
 
     signal(SIGINT, handle_sigint);
 
     init_status(THREAD_INPUT, "Input");
     init_status(THREAD_WRITER, "Writer");
     init_status(THREAD_READER, "Reader");
-    init_status(THREAD_MONITOR, "Monitor");
 
     if (pthread_create(&input_thread, NULL, input_thread_fn, NULL) != 0) {
         perror("pthread_create input");
@@ -404,28 +405,18 @@ int main(void)
         return 1;
     }
 
-    if (pthread_create(&monitor_thread, NULL, monitor_thread_fn, NULL) != 0) {
-        perror("pthread_create monitor");
-        keep_running = 0;
-        pthread_cond_broadcast(&input_cond);
-        pthread_join(input_thread, NULL);
-        pthread_join(writer_thread, NULL);
-        pthread_join(reader_thread, NULL);
-        return 1;
-    }
+    print_status_snapshot();
 
     pthread_join(input_thread, NULL);
 
     keep_running = 0;
     pthread_cond_broadcast(&input_cond);
 
-    pthread_kill(reader_thread, SIGINT);
-    pthread_kill(monitor_thread, SIGINT);
-    pthread_kill(writer_thread, SIGINT);
+    pthread_cancel(reader_thread);
+    pthread_cancel(writer_thread);
 
     pthread_join(writer_thread, NULL);
     pthread_join(reader_thread, NULL);
-    pthread_join(monitor_thread, NULL);
 
     printf("\nUser-space application exited.\n");
     return 0;
