@@ -41,6 +41,8 @@ static volatile sig_atomic_t keep_running = 1;
 static pthread_mutex_t status_mutex = PTHREAD_MUTEX_INITIALIZER;
 static thread_status_t statuses[THREAD_COUNT];
 
+static pthread_barrier_t startup_barrier;
+
 static pthread_mutex_t input_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t input_cond = PTHREAD_COND_INITIALIZER;
 static char pending_input[INPUT_BUF_SIZE];
@@ -98,7 +100,7 @@ static void print_status_snapshot(void)
     pthread_mutex_lock(&status_mutex);
 
     printf("\n====================================================\n");
-    printf("           MORSE USER-SPACE THREAD MONITOR\n");
+    printf("               MORSE DEVICE STATUS\n");
     printf("====================================================\n");
     for (int i = 0; i < THREAD_COUNT; i++) {
         printf("%-8s | TID: %-6ld | %-8s | %s\n",
@@ -108,9 +110,8 @@ static void print_status_snapshot(void)
                statuses[i].detail);
     }
     printf("----------------------------------------------------\n");
-    printf("Type text and press Enter to send Morse to the LED.\n");
-    printf("Press the Pi button to generate '.' or '-' for read().\n");
-    printf("Type 'quit' to exit.\n");
+    printf("  Device : " DEVICE_PATH "\n");
+    printf("  Type 'help' for available commands.\n");
     printf("====================================================\n");
     fflush(stdout);
 
@@ -163,6 +164,7 @@ static void print_help(void)
 
 static void *input_thread_fn(void *arg)
 {
+    pthread_barrier_wait(&startup_barrier);
     (void)arg;
     char line[INPUT_BUF_SIZE];
 
@@ -246,6 +248,7 @@ static void *input_thread_fn(void *arg)
 
 static void *writer_thread_fn(void *arg)
 {
+    pthread_barrier_wait(&startup_barrier);
     (void)arg;
     int fd;
     char local_buf[INPUT_BUF_SIZE];
@@ -308,6 +311,7 @@ static void *writer_thread_fn(void *arg)
 
 static void *reader_thread_fn(void *arg)
 {
+    pthread_barrier_wait(&startup_barrier);
     (void)arg;
     int fd;
     char buf[MORSE_READ_SIZE];
@@ -405,6 +409,8 @@ int main(void)
         return 1;
     }
 
+    pthread_barrier_init(&startup_barrier, NULL, 4);
+    pthread_barrier_wait(&startup_barrier); // blocks until all 3 threads are ready
     print_status_snapshot();
 
     pthread_join(input_thread, NULL);
@@ -417,6 +423,8 @@ int main(void)
 
     pthread_join(writer_thread, NULL);
     pthread_join(reader_thread, NULL);
+
+    pthread_barrier_destroy(&startup_barrier);
 
     printf("\nUser-space application exited.\n");
     return 0;
